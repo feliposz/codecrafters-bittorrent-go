@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"unicode"
 
@@ -99,9 +102,9 @@ func decodeBencode(bencodedString string) (interface{}, int, error) {
 type Metainfo struct {
 	Tracker     string
 	Length      int
-	InfoHash    string
+	InfoHash    []byte
 	PieceLength int
-	PieceHashes []string
+	PieceHashes [][]byte
 }
 
 func decodeTorrentFile(filename string) (*Metainfo, error) {
@@ -141,7 +144,7 @@ func decodeTorrentFile(filename string) (*Metainfo, error) {
 					case "pieces":
 						pieces := []byte(value.(string))
 						for i := 0; i < len(pieces); i += 20 {
-							metainfo.PieceHashes = append(metainfo.PieceHashes, fmt.Sprintf("%x", pieces[i:i+20]))
+							metainfo.PieceHashes = append(metainfo.PieceHashes, slices.Clone(pieces[i:i+20]))
 						}
 					}
 				}
@@ -159,14 +162,14 @@ func decodeTorrentFile(filename string) (*Metainfo, error) {
 	return nil, fmt.Errorf("invalid torrent file")
 }
 
-func GetInfoHash(info map[string]any) (string, error) {
+func GetInfoHash(info map[string]any) ([]byte, error) {
 	sha := sha1.New()
 	err := bencode.Marshal(sha, info)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	shaSum := sha.Sum(nil)
-	return fmt.Sprintf("%x", shaSum), nil
+	return shaSum, nil
 }
 
 func main() {
@@ -194,11 +197,65 @@ func main() {
 
 		fmt.Println("Tracker URL:", metainfo.Tracker)
 		fmt.Println("Length:", metainfo.Length)
-		fmt.Println("Info Hash:", metainfo.InfoHash)
+		fmt.Printf("Info Hash: %x\n", metainfo.InfoHash)
 		fmt.Println("Piece Length:", metainfo.PieceLength)
 		fmt.Println("Piece Hashes:")
 		for _, hash := range metainfo.PieceHashes {
-			fmt.Println(hash)
+			fmt.Printf("%x\n", hash)
+		}
+	} else if command == "peers" {
+		filename := os.Args[2]
+
+		metainfo, err := decodeTorrentFile(filename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		values := url.Values{}
+		values.Add("info_hash", string(metainfo.InfoHash))
+		values.Add("peer_id", "00112233445566778899")
+		values.Add("port", "6881")
+		values.Add("uploaded", "0")
+		values.Add("downloaded", "0")
+		values.Add("left", strconv.Itoa(metainfo.Length))
+		values.Add("compact", "1")
+		requestURL := fmt.Sprintf("%s?%s", metainfo.Tracker, values.Encode())
+		resp, err := http.Get(requestURL)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		decoded, _, err := decodeBencode(string(body))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		valid := false
+		peers := [][]byte{}
+		if dict, ok := decoded.(map[string]any); ok {
+			if peerStr, ok := dict["peers"].(string); ok {
+				for i := 0; i < len(peerStr); i += 6 {
+					peers = append(peers, []byte(peerStr[i:i+6]))
+					valid = true
+				}
+			}
+		}
+
+		if valid {
+			for _, peer := range peers {
+				port := int(peer[4])*256 + int(peer[5])
+				fmt.Printf("%d.%d.%d.%d:%d\n", peer[0], peer[1], peer[2], peer[3], port)
+			}
+		} else {
+			jsonOutput, _ := json.Marshal(decoded)
+			fmt.Println(string(jsonOutput))
 		}
 	} else {
 		fmt.Println("Unknown command: " + command)
