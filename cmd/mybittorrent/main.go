@@ -3,15 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"unicode"
 	// bencode "github.com/jackpal/bencode-go" // Available if you need it!
 )
 
-// Example:
-// - 5:hello -> hello
-// - 10:hello12345 -> hello12345
+// TODO: change to byte array?
 func decodeBencode(bencodedString string) (interface{}, int, error) {
 	if unicode.IsDigit(rune(bencodedString[0])) {
 		var firstColonIndex int
@@ -95,6 +94,54 @@ func decodeBencode(bencodedString string) (interface{}, int, error) {
 	}
 }
 
+type Metainfo struct {
+	Tracker string
+	Length  int
+}
+
+func decodeTorrentFile(filename string) (*Metainfo, error) {
+
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+
+	dict, _, err := decodeBencode(string(content))
+	if err != nil {
+		return nil, err
+	}
+
+	switch dict := dict.(type) {
+	case map[string]any:
+		metainfo := &Metainfo{}
+		valid := false
+		for key, value := range dict {
+			if key == "announce" {
+				metainfo.Tracker = value.(string)
+				valid = true
+			} else if key == "info" {
+				info := value.(map[string]any)
+				for key, value := range info {
+					if key == "length" {
+						metainfo.Length = value.(int)
+					}
+				}
+			}
+		}
+		if valid {
+			return metainfo, nil
+		}
+	}
+
+	return nil, fmt.Errorf("invalid torrent file")
+}
+
 func main() {
 	command := os.Args[1]
 
@@ -109,6 +156,17 @@ func main() {
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
+	} else if command == "info" {
+		filename := os.Args[2]
+
+		metainfo, err := decodeTorrentFile(filename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		fmt.Println("Tracker URL:", metainfo.Tracker)
+		fmt.Println("Length:", metainfo.Length)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
