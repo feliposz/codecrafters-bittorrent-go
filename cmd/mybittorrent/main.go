@@ -222,8 +222,7 @@ func main() {
 		}
 
 		for _, peer := range peers {
-			port := int(peer[4])*256 + int(peer[5])
-			fmt.Printf("%d.%d.%d.%d:%d\n", peer[0], peer[1], peer[2], peer[3], port)
+			fmt.Println(fmtPeer(peer))
 		}
 	} else if command == "handshake" {
 		filename := os.Args[2]
@@ -243,8 +242,7 @@ func main() {
 
 		validPeer := false
 		for _, peer := range peers {
-			port := int(peer[4])*256 + int(peer[5])
-			peerStr := fmt.Sprintf("%d.%d.%d.%d:%d", peer[0], peer[1], peer[2], peer[3], port)
+			peerStr := fmtPeer(peer)
 			if peerStr == selectedPeer {
 				validPeer = true
 				break
@@ -265,6 +263,12 @@ func main() {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
 	}
+}
+
+func fmtPeer(peer []byte) string {
+	port := int(peer[4])*256 + int(peer[5])
+	peerStr := fmt.Sprintf("%d.%d.%d.%d:%d", peer[0], peer[1], peer[2], peer[3], port)
+	return peerStr
 }
 
 func getPeers(metainfo *Metainfo) ([][]byte, error) {
