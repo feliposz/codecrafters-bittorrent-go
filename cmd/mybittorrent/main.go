@@ -12,7 +12,7 @@ import (
 // Example:
 // - 5:hello -> hello
 // - 10:hello12345 -> hello12345
-func decodeBencode(bencodedString string) (interface{}, error) {
+func decodeBencode(bencodedString string) (interface{}, int, error) {
 	if unicode.IsDigit(rune(bencodedString[0])) {
 		var firstColonIndex int
 
@@ -27,10 +27,10 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 
 		length, err := strconv.Atoi(lengthStr)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 
-		return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], nil
+		return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], firstColonIndex + 1 + length, nil
 	} else if bencodedString[0] == 'i' {
 		var firstEIndex int
 
@@ -45,12 +45,27 @@ func decodeBencode(bencodedString string) (interface{}, error) {
 
 		value, err := strconv.Atoi(valueStr)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 
-		return value, nil
+		return value, firstEIndex + 1, nil
+	} else if bencodedString[0] == 'l' {
+		list := []any{}
+		offset := 1
+		for offset < len(bencodedString) && bencodedString[offset] != 'e' {
+			current, size, err := decodeBencode(bencodedString[offset:])
+			if err != nil {
+				return "", 0, nil
+			}
+			offset += size
+			list = append(list, current)
+		}
+		if offset >= len(bencodedString) || bencodedString[offset] != 'e' {
+			return "", 0, fmt.Errorf("Unfinished list")
+		}
+		return list, offset + 1, nil
 	} else {
-		return "", fmt.Errorf("Only strings and integers are supported at the moment")
+		return "", 0, fmt.Errorf("Only strings, lists and integers are supported at the moment")
 	}
 }
 
@@ -60,7 +75,7 @@ func main() {
 	if command == "decode" {
 		bencodedValue := os.Args[2]
 
-		decoded, err := decodeBencode(bencodedValue)
+		decoded, _, err := decodeBencode(bencodedValue)
 		if err != nil {
 			fmt.Println(err)
 			return
