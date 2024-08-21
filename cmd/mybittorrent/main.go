@@ -1,13 +1,15 @@
 package main
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"unicode"
-	// bencode "github.com/jackpal/bencode-go" // Available if you need it!
+
+	"github.com/jackpal/bencode-go"
 )
 
 // TODO: change to byte array?
@@ -95,8 +97,9 @@ func decodeBencode(bencodedString string) (interface{}, int, error) {
 }
 
 type Metainfo struct {
-	Tracker string
-	Length  int
+	Tracker  string
+	Length   int
+	InfoHash string
 }
 
 func decodeTorrentFile(filename string) (*Metainfo, error) {
@@ -132,6 +135,10 @@ func decodeTorrentFile(filename string) (*Metainfo, error) {
 						metainfo.Length = value.(int)
 					}
 				}
+				metainfo.InfoHash, err = GetInfoHash(info)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if valid {
@@ -140,6 +147,16 @@ func decodeTorrentFile(filename string) (*Metainfo, error) {
 	}
 
 	return nil, fmt.Errorf("invalid torrent file")
+}
+
+func GetInfoHash(info map[string]any) (string, error) {
+	sha := sha1.New()
+	err := bencode.Marshal(sha, info)
+	if err != nil {
+		return "", err
+	}
+	shaSum := sha.Sum(nil)
+	return fmt.Sprintf("%x", shaSum), nil
 }
 
 func main() {
@@ -167,6 +184,7 @@ func main() {
 
 		fmt.Println("Tracker URL:", metainfo.Tracker)
 		fmt.Println("Length:", metainfo.Length)
+		fmt.Println("Info Hash:", metainfo.InfoHash)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
