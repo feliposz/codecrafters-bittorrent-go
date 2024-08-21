@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -317,6 +319,12 @@ func main() {
 		fmt.Println("requesting piece number:", pieceNumber)
 		fmt.Println("output filename:", outputFilename)
 
+		err = getPiece(conn, pieceNumber, outputFile)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -403,4 +411,65 @@ func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
 	}
 
 	return slices.Clone(buf[48:68]), nil
+}
+
+const (
+	Choke         = 0
+	Unchoke       = 1
+	Interested    = 2
+	NotInterested = 3
+	Have          = 4
+	Bitfield      = 5
+	Request       = 6
+	Piece         = 7
+	Cancel        = 8
+)
+
+func getPiece(conn net.Conn, pieceNumber int, outputFile *os.File) error {
+	log.Println("Wait for a bitfield message from the peer indicating which pieces it has")
+	lengthPrefix := make([]byte, 4)
+	_, err := conn.Read(lengthPrefix)
+	if err != nil {
+		return err
+	}
+	length := binary.BigEndian.Uint32(lengthPrefix)
+	payload := make([]byte, length)
+	bytesReceived, err := conn.Read(payload) // ignoring for now
+	if err != nil {
+		return err
+	}
+	msgId := payload[0]
+	if msgId != Bitfield {
+		return fmt.Errorf("expected Bitfield, got %d", msgId)
+	}
+	log.Println("Bytes received", bytesReceived)
+
+	log.Println("Send an interested message")
+	bytesSent, err := conn.Write([]byte{0, 0, 0, 1, Interested})
+	if err != nil {
+		return err
+	}
+	log.Println("Bytes sent", bytesSent)
+
+	log.Println("Wait until you receive an unchoke message back")
+	_, err = conn.Read(lengthPrefix)
+	fmt.Println("lengthPrefix", lengthPrefix)
+	if err != nil {
+		return err
+	}
+	length = binary.BigEndian.Uint32(lengthPrefix)
+	payload = make([]byte, length)
+	bytesReceived, err = conn.Read(payload)
+	if err != nil {
+		return err
+	}
+	msgId = payload[0]
+	if msgId != Unchoke {
+		return fmt.Errorf("expected Unchoke, got %d", msgId)
+	}
+	log.Println("Bytes received", bytesReceived)
+
+	log.Println("...")
+
+	return nil
 }
