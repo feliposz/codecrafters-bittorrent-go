@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/jackpal/bencode-go"
 )
+
+var peerID = "00112233445566778899"
 
 // TODO: change to byte array?
 func decodeBencode(bencodedString string) (interface{}, int, error) {
@@ -222,6 +225,42 @@ func main() {
 			port := int(peer[4])*256 + int(peer[5])
 			fmt.Printf("%d.%d.%d.%d:%d\n", peer[0], peer[1], peer[2], peer[3], port)
 		}
+	} else if command == "handshake" {
+		filename := os.Args[2]
+		selectedPeer := os.Args[3]
+
+		metainfo, err := decodeTorrentFile(filename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		peers, err := getPeers(metainfo)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		validPeer := false
+		for _, peer := range peers {
+			port := int(peer[4])*256 + int(peer[5])
+			peerStr := fmt.Sprintf("%d.%d.%d.%d:%d", peer[0], peer[1], peer[2], peer[3], port)
+			if peerStr == selectedPeer {
+				validPeer = true
+				break
+			}
+		}
+		if !validPeer {
+			fmt.Println("invalid peer:", selectedPeer)
+			return
+		}
+
+		remotePeerID, err := handshake(selectedPeer, metainfo)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Printf("Peer ID: %x\n", remotePeerID)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -231,7 +270,7 @@ func main() {
 func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	values := url.Values{}
 	values.Add("info_hash", string(metainfo.InfoHash))
-	values.Add("peer_id", "00112233445566778899")
+	values.Add("peer_id", peerID)
 	values.Add("port", "6881")
 	values.Add("uploaded", "0")
 	values.Add("downloaded", "0")
@@ -269,4 +308,42 @@ func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	}
 
 	return nil, fmt.Errorf("unknown error getting peers")
+}
+
+func handshake(selectedPeer string, metainfo *Metainfo) ([]byte, error) {
+	conn, err := net.Dial("tcp", selectedPeer)
+	if err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, 512)
+	// length of the protocol string (BitTorrent protocol) which is 19 (1 byte)
+	buf[0] = 19
+
+	// the string BitTorrent protocol (19 bytes)
+	copy(buf[1:20], []byte("BitTorrent protocol"))
+
+	// eight reserved bytes, which are all set to zero (8 bytes)
+	// buf[20:28]
+
+	// sha1 infohash (20 bytes) (NOT the hexadecimal representation, which is 40 bytes long)
+	copy(buf[28:48], metainfo.InfoHash)
+
+	// peer id (20 bytes) (you can use 00112233445566778899 for this challenge)
+	copy(buf[48:68], []byte(peerID))
+
+	_, err = conn.Write(buf[:68])
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := conn.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	if size < 68 {
+		return nil, fmt.Errorf("unexpected handshake response (%d bytes): %q", size, buf[:size])
+	}
+
+	return slices.Clone(buf[48:68]), nil
 }
