@@ -97,9 +97,11 @@ func decodeBencode(bencodedString string) (interface{}, int, error) {
 }
 
 type Metainfo struct {
-	Tracker  string
-	Length   int
-	InfoHash string
+	Tracker     string
+	Length      int
+	InfoHash    string
+	PieceLength int
+	PieceHashes []string
 }
 
 func decodeTorrentFile(filename string) (*Metainfo, error) {
@@ -131,8 +133,16 @@ func decodeTorrentFile(filename string) (*Metainfo, error) {
 			} else if key == "info" {
 				info := value.(map[string]any)
 				for key, value := range info {
-					if key == "length" {
+					switch key {
+					case "length":
 						metainfo.Length = value.(int)
+					case "piece length":
+						metainfo.PieceLength = value.(int)
+					case "pieces":
+						pieces := []byte(value.(string))
+						for i := 0; i < len(pieces); i += 20 {
+							metainfo.PieceHashes = append(metainfo.PieceHashes, fmt.Sprintf("%x", pieces[i:i+20]))
+						}
 					}
 				}
 				metainfo.InfoHash, err = GetInfoHash(info)
@@ -185,6 +195,11 @@ func main() {
 		fmt.Println("Tracker URL:", metainfo.Tracker)
 		fmt.Println("Length:", metainfo.Length)
 		fmt.Println("Info Hash:", metainfo.InfoHash)
+		fmt.Println("Piece Length:", metainfo.PieceLength)
+		fmt.Println("Piece Hashes:")
+		for _, hash := range metainfo.PieceHashes {
+			fmt.Println(hash)
+		}
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
