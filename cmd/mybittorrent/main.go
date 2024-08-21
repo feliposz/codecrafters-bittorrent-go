@@ -319,12 +319,13 @@ func main() {
 		fmt.Println("requesting piece number:", pieceNumber)
 		fmt.Println("output filename:", outputFilename)
 
-		err = getPiece(conn, pieceNumber, outputFile)
+		err = getPiece(conn, metainfo, pieceNumber, outputFile)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
+		fmt.Printf("Piece %d downloaded to %s\n", pieceNumber, outputFilename)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -425,7 +426,7 @@ const (
 	Cancel        = 8
 )
 
-func getPiece(conn net.Conn, pieceNumber int, outputFile *os.File) error {
+func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os.File) error {
 	log.Println("Wait for a bitfield message from the peer indicating which pieces it has")
 	lengthPrefix := make([]byte, 4)
 	_, err := conn.Read(lengthPrefix)
@@ -453,7 +454,6 @@ func getPiece(conn net.Conn, pieceNumber int, outputFile *os.File) error {
 
 	log.Println("Wait until you receive an unchoke message back")
 	_, err = conn.Read(lengthPrefix)
-	fmt.Println("lengthPrefix", lengthPrefix)
 	if err != nil {
 		return err
 	}
@@ -469,7 +469,68 @@ func getPiece(conn net.Conn, pieceNumber int, outputFile *os.File) error {
 	}
 	log.Println("Bytes received", bytesReceived)
 
-	log.Println("...")
+	offset := 0
+	remainingLength := metainfo.PieceLength
+	blockLength := 16 * 1024
+
+	for {
+		log.Printf("Sending request for piece %d offset %d\n", pieceNumber, offset)
+		if remainingLength < blockLength {
+			blockLength = remainingLength
+		}
+		requestPayload := []byte{0, 0, 0, 0, Request}
+		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(pieceNumber))
+		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(offset))
+		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(blockLength))
+		binary.BigEndian.PutUint32(requestPayload, uint32(len(requestPayload)))
+		bytesSent, err = conn.Write(requestPayload)
+		if err != nil {
+			return err
+		}
+		log.Println("Bytes sent", bytesSent)
+
+		log.Println("Waiting for piece message")
+		_, err = conn.Read(lengthPrefix)
+		if err != nil {
+			return err
+		}
+		length = binary.BigEndian.Uint32(lengthPrefix)
+		if length == 0 {
+			// ignore keep-alive message
+			continue
+		}
+		// piece "header"
+		payload = make([]byte, 9)
+		_, err = conn.Read(payload)
+		if err != nil {
+			return err
+		}
+		msgId = payload[0]
+		if msgId != Piece {
+			return fmt.Errorf("expected Piece, got %d", msgId)
+		}
+		index := binary.BigEndian.Uint32(payload[1:])
+		begin := binary.BigEndian.Uint32(payload[5:])
+		log.Println("index", index, "begin", begin)
+		length -= 9
+
+		// piece "data block"
+		payload = make([]byte, length)
+		bytesReceived, err = io.ReadFull(conn, payload)
+		if err != nil {
+			return err
+		}
+		log.Println("Bytes received", bytesReceived)
+
+		outputFile.Write(payload)
+
+		offset += blockLength
+		remainingLength -= blockLength
+
+		if remainingLength == 0 {
+			break
+		}
+	}
 
 	return nil
 }
