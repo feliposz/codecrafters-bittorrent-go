@@ -211,54 +211,62 @@ func main() {
 			fmt.Println(err)
 			return
 		}
-		values := url.Values{}
-		values.Add("info_hash", string(metainfo.InfoHash))
-		values.Add("peer_id", "00112233445566778899")
-		values.Add("port", "6881")
-		values.Add("uploaded", "0")
-		values.Add("downloaded", "0")
-		values.Add("left", strconv.Itoa(metainfo.Length))
-		values.Add("compact", "1")
-		requestURL := fmt.Sprintf("%s?%s", metainfo.Tracker, values.Encode())
-		resp, err := http.Get(requestURL)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		decoded, _, err := decodeBencode(string(body))
+
+		peers, err := getPeers(metainfo)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 
-		valid := false
-		peers := [][]byte{}
-		if dict, ok := decoded.(map[string]any); ok {
-			if peerStr, ok := dict["peers"].(string); ok {
-				for i := 0; i < len(peerStr); i += 6 {
-					peers = append(peers, []byte(peerStr[i:i+6]))
-					valid = true
-				}
-			}
-		}
-
-		if valid {
-			for _, peer := range peers {
-				port := int(peer[4])*256 + int(peer[5])
-				fmt.Printf("%d.%d.%d.%d:%d\n", peer[0], peer[1], peer[2], peer[3], port)
-			}
-		} else {
-			jsonOutput, _ := json.Marshal(decoded)
-			fmt.Println(string(jsonOutput))
+		for _, peer := range peers {
+			port := int(peer[4])*256 + int(peer[5])
+			fmt.Printf("%d.%d.%d.%d:%d\n", peer[0], peer[1], peer[2], peer[3], port)
 		}
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
 	}
+}
+
+func getPeers(metainfo *Metainfo) ([][]byte, error) {
+	values := url.Values{}
+	values.Add("info_hash", string(metainfo.InfoHash))
+	values.Add("peer_id", "00112233445566778899")
+	values.Add("port", "6881")
+	values.Add("uploaded", "0")
+	values.Add("downloaded", "0")
+	values.Add("left", strconv.Itoa(metainfo.Length))
+	values.Add("compact", "1")
+	requestURL := fmt.Sprintf("%s?%s", metainfo.Tracker, values.Encode())
+	resp, err := http.Get(requestURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	decoded, _, err := decodeBencode(string(body))
+	if err != nil {
+		return nil, err
+	}
+
+	if dict, ok := decoded.(map[string]any); ok {
+		if peerStr, ok := dict["peers"].(string); ok {
+			valid := false
+			peers := [][]byte{}
+			for i := 0; i < len(peerStr); i += 6 {
+				peers = append(peers, []byte(peerStr[i:i+6]))
+				valid = true
+			}
+			if valid {
+				return peers, nil
+			}
+		} else if errorStr, ok := dict["failure reason"].(string); ok {
+			return nil, fmt.Errorf(errorStr)
+		}
+	}
+
+	return nil, fmt.Errorf("unknown error getting peers")
 }
