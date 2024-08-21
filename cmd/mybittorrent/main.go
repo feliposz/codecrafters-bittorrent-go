@@ -253,12 +253,70 @@ func main() {
 			return
 		}
 
-		remotePeerID, err := handshake(selectedPeer, metainfo)
+		conn, err := net.Dial("tcp", selectedPeer)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer conn.Close()
+		remotePeerID, err := handshake(conn, metainfo)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 		fmt.Printf("Peer ID: %x\n", remotePeerID)
+	} else if command == "download_piece" {
+		if os.Args[2] != "-o" {
+			fmt.Println("expected '-o' flag with output path")
+			return
+		}
+		outputFilename := os.Args[3]
+		torrentFilename := os.Args[4]
+		pieceNumber, err := strconv.Atoi(os.Args[5])
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		outputFile, err := os.Create(outputFilename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer outputFile.Close()
+
+		metainfo, err := decodeTorrentFile(torrentFilename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		peers, err := getPeers(metainfo)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		if len(peers) == 0 {
+			fmt.Println("no peers")
+			return
+		}
+
+		conn, err := net.Dial("tcp", fmtPeer(peers[0]))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer conn.Close()
+		remotePeerID, err := handshake(conn, metainfo)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Printf("Peer ID: %x\n", remotePeerID)
+
+		fmt.Println("requesting piece number:", pieceNumber)
+		fmt.Println("output filename:", outputFilename)
+
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -314,12 +372,7 @@ func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	return nil, fmt.Errorf("unknown error getting peers")
 }
 
-func handshake(selectedPeer string, metainfo *Metainfo) ([]byte, error) {
-	conn, err := net.Dial("tcp", selectedPeer)
-	if err != nil {
-		return nil, err
-	}
-
+func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
 	buf := make([]byte, 512)
 	// length of the protocol string (BitTorrent protocol) which is 19 (1 byte)
 	buf[0] = 19
@@ -336,7 +389,7 @@ func handshake(selectedPeer string, metainfo *Metainfo) ([]byte, error) {
 	// peer id (20 bytes) (you can use 00112233445566778899 for this challenge)
 	copy(buf[48:68], []byte(peerID))
 
-	_, err = conn.Write(buf[:68])
+	_, err := conn.Write(buf[:68])
 	if err != nil {
 		return nil, err
 	}
