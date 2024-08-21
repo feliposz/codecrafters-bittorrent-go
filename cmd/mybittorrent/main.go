@@ -64,8 +64,34 @@ func decodeBencode(bencodedString string) (interface{}, int, error) {
 			return "", 0, fmt.Errorf("Unfinished list")
 		}
 		return list, offset + 1, nil
+	} else if bencodedString[0] == 'd' {
+		dict := map[string]any{}
+		offset := 1
+		for offset < len(bencodedString) && bencodedString[offset] != 'e' {
+			key, keySize, err := decodeBencode(bencodedString[offset:])
+			if err != nil {
+				return "", 0, nil
+			}
+			switch key.(type) {
+			case string:
+				// ok
+			default:
+				return "", 0, fmt.Errorf("Key must be a string")
+			}
+			offset += keySize
+			value, valueSize, err := decodeBencode(bencodedString[offset:])
+			if err != nil {
+				return "", 0, fmt.Errorf("Error decoding value")
+			}
+			offset += valueSize
+			dict[key.(string)] = value
+		}
+		if offset >= len(bencodedString) || bencodedString[offset] != 'e' {
+			return "", 0, fmt.Errorf("Unfinished dictionary")
+		}
+		return dict, offset + 1, nil
 	} else {
-		return "", 0, fmt.Errorf("Only strings, lists and integers are supported at the moment")
+		return "", 0, fmt.Errorf("Unsupported encoded type")
 	}
 }
 
