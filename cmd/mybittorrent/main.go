@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net"
 	"net/http"
@@ -313,7 +312,7 @@ func main() {
 		fmt.Println("requesting piece number:", pieceNumber)
 		fmt.Println("output filename:", outputFilename)
 
-		data, err := getPiece(conn, metainfo, pieceNumber)
+		data, err := getPiece(conn, metainfo, pieceNumber, true)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -328,6 +327,69 @@ func main() {
 		outputFile.Write(data)
 
 		fmt.Printf("Piece %d downloaded to %s\n", pieceNumber, outputFilename)
+	} else if command == "download" {
+		if os.Args[2] != "-o" {
+			fmt.Println("expected '-o' flag with output path")
+			return
+		}
+		outputFilename := os.Args[3]
+		torrentFilename := os.Args[4]
+
+		metainfo, err := decodeTorrentFile(torrentFilename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		peers, err := getPeers(metainfo)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		if len(peers) == 0 {
+			fmt.Println("no peers")
+			return
+		}
+
+		conn, err := net.Dial("tcp", fmtPeer(peers[0]))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer conn.Close()
+		remotePeerID, err := handshake(conn, metainfo)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Printf("Peer ID: %x\n", remotePeerID)
+
+		outputFile, err := os.Create(outputFilename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer outputFile.Close()
+
+		pieceCount := int(math.Ceil(float64(metainfo.Length) / float64(metainfo.PieceLength)))
+
+		// dump, single-threaded sequential download
+		fmt.Println("output filename:", outputFilename)
+		waitBitfield := true
+		for pieceNumber := 0; pieceNumber < pieceCount; pieceNumber++ {
+			fmt.Println("requesting piece number:", pieceNumber, " (total:", pieceCount, ")")
+
+			data, err := getPiece(conn, metainfo, pieceNumber, waitBitfield)
+			waitBitfield = false
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			outputFile.Write(data)
+		}
+
+		fmt.Printf("Piece %s downloaded to %s.\n", torrentFilename, outputFilename)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -428,48 +490,55 @@ const (
 	Cancel        = 8
 )
 
-func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int) ([]byte, error) {
-	log.Println("Wait for a bitfield message from the peer indicating which pieces it has")
+func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, waitBitfield bool) ([]byte, error) {
+
 	lengthPrefix := make([]byte, 4)
-	_, err := conn.Read(lengthPrefix)
-	if err != nil {
-		return nil, err
-	}
-	length := binary.BigEndian.Uint32(lengthPrefix)
-	payload := make([]byte, length)
-	bytesReceived, err := conn.Read(payload) // ignoring for now
-	if err != nil {
-		return nil, err
-	}
-	msgId := payload[0]
-	if msgId != Bitfield {
-		return nil, fmt.Errorf("expected Bitfield, got %d", msgId)
-	}
-	log.Println("Bytes received", bytesReceived)
+	var length uint32
 
-	log.Println("Send an interested message")
-	bytesSent, err := conn.Write([]byte{0, 0, 0, 1, Interested})
-	if err != nil {
-		return nil, err
-	}
-	log.Println("Bytes sent", bytesSent)
+	var payload []byte
 
-	log.Println("Wait until you receive an unchoke message back")
-	_, err = conn.Read(lengthPrefix)
-	if err != nil {
-		return nil, err
+	if waitBitfield {
+		// log.Println("Wait for a bitfield message from the peer indicating which pieces it has")
+		_, err := conn.Read(lengthPrefix)
+		if err != nil {
+			return nil, err
+		}
+		length := binary.BigEndian.Uint32(lengthPrefix)
+		payload := make([]byte, length)
+		_, err = conn.Read(payload) // ignoring for now
+		if err != nil {
+			return nil, err
+		}
+		msgId := payload[0]
+		if msgId != Bitfield {
+			return nil, fmt.Errorf("expected Bitfield, got %d", msgId)
+		}
+		//log.Println("Bytes received", bytesReceived)
+
+		//log.Println("Send an interested message")
+		_, err = conn.Write([]byte{0, 0, 0, 1, Interested})
+		if err != nil {
+			return nil, err
+		}
+		//log.Println("Bytes sent", bytesSent)
+
+		//log.Println("Wait until you receive an unchoke message back")
+		_, err = conn.Read(lengthPrefix)
+		if err != nil {
+			return nil, err
+		}
+		length = binary.BigEndian.Uint32(lengthPrefix)
+		payload = make([]byte, length)
+		_, err = conn.Read(payload)
+		if err != nil {
+			return nil, err
+		}
+		msgId = payload[0]
+		if msgId != Unchoke {
+			return nil, fmt.Errorf("expected Unchoke, got %d", msgId)
+		}
+		// log.Println("Bytes received", bytesReceived)
 	}
-	length = binary.BigEndian.Uint32(lengthPrefix)
-	payload = make([]byte, length)
-	bytesReceived, err = conn.Read(payload)
-	if err != nil {
-		return nil, err
-	}
-	msgId = payload[0]
-	if msgId != Unchoke {
-		return nil, fmt.Errorf("expected Unchoke, got %d", msgId)
-	}
-	log.Println("Bytes received", bytesReceived)
 
 	offset := 0
 	remainingLength := metainfo.PieceLength
@@ -496,7 +565,7 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int) ([]byte, error
 		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(offset))
 		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(blockLength))
 		binary.BigEndian.PutUint32(requestPayload, uint32(len(requestPayload)))
-		_, err = conn.Write(requestPayload)
+		_, err := conn.Write(requestPayload)
 		if err != nil {
 			return nil, err
 		}
@@ -518,7 +587,7 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		msgId = payload[0]
+		msgId := payload[0]
 		if msgId != Piece {
 			return nil, fmt.Errorf("expected Piece, got %d", msgId)
 		}
