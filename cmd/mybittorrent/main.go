@@ -13,6 +13,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"sync"
 	"unicode"
 
 	"github.com/jackpal/bencode-go"
@@ -351,18 +352,58 @@ func main() {
 			return
 		}
 
-		conn, err := net.Dial("tcp", fmtPeer(peers[0]))
-		if err != nil {
-			fmt.Println(err)
-			return
+		pieceCount := int(math.Ceil(float64(metainfo.Length) / float64(metainfo.PieceLength)))
+
+		pieceData := make([][]byte, pieceCount)
+
+		var wg sync.WaitGroup
+
+		worker := func(pieceNumber int, peerIndex int) ([]byte, error) {
+			peer := fmtPeer(peers[peerIndex])
+			fmt.Printf("Getting piece %d from %s\n", pieceNumber, peer)
+			conn, err := net.Dial("tcp", peer)
+			if err != nil {
+				return nil, fmt.Errorf("error connecting to peer %v: %v", peer, err)
+			}
+			defer conn.Close()
+			_, err = handshake(conn, metainfo)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Printf("handshake from %s\n", peer)
+
+			data, err := getPiece(conn, metainfo, pieceNumber, true)
+			if err != nil {
+				return nil, fmt.Errorf("error receiving piece %d from peer %v: %v", pieceNumber, peer, err)
+			}
+			fmt.Printf("got piece %d\n", pieceNumber)
+			return data, nil
 		}
-		defer conn.Close()
-		remotePeerID, err := handshake(conn, metainfo)
-		if err != nil {
-			fmt.Println(err)
-			return
+
+		peerAvailable := make(chan int, len(peers))
+		for i := 0; i < len(peers); i++ {
+			peerAvailable <- i
 		}
-		fmt.Printf("Peer ID: %x\n", remotePeerID)
+
+		for pieceNumber := 0; pieceNumber < pieceCount; pieceNumber++ {
+			wg.Add(1)
+			go func(pieceNumber int) {
+				for retry := 1; retry <= 10; retry++ {
+					peerIndex := <-peerAvailable
+					data, err := worker(pieceNumber, peerIndex)
+					peerAvailable <- peerIndex
+					if err != nil {
+						fmt.Printf("Retrying (#%d) after error: %v", retry, err)
+						continue
+					}
+					pieceData[pieceNumber] = data
+					break
+				}
+				wg.Done()
+			}(pieceNumber)
+		}
+
+		wg.Wait()
 
 		outputFile, err := os.Create(outputFilename)
 		if err != nil {
@@ -370,22 +411,7 @@ func main() {
 			return
 		}
 		defer outputFile.Close()
-
-		pieceCount := int(math.Ceil(float64(metainfo.Length) / float64(metainfo.PieceLength)))
-
-		// dump, single-threaded sequential download
-		fmt.Println("output filename:", outputFilename)
-		waitBitfield := true
-		for pieceNumber := 0; pieceNumber < pieceCount; pieceNumber++ {
-			fmt.Println("requesting piece number:", pieceNumber, " (total:", pieceCount, ")")
-
-			data, err := getPiece(conn, metainfo, pieceNumber, waitBitfield)
-			waitBitfield = false
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-
+		for _, data := range pieceData {
 			outputFile.Write(data)
 		}
 
@@ -504,6 +530,9 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, waitBitfield b
 			return nil, err
 		}
 		length := binary.BigEndian.Uint32(lengthPrefix)
+		if length == 0 {
+			return nil, fmt.Errorf("unexpected keepalive")
+		}
 		payload := make([]byte, length)
 		_, err = conn.Read(payload) // ignoring for now
 		if err != nil {
