@@ -281,13 +281,6 @@ func main() {
 			return
 		}
 
-		outputFile, err := os.Create(outputFilename)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer outputFile.Close()
-
 		metainfo, err := decodeTorrentFile(torrentFilename)
 		if err != nil {
 			fmt.Println(err)
@@ -320,11 +313,19 @@ func main() {
 		fmt.Println("requesting piece number:", pieceNumber)
 		fmt.Println("output filename:", outputFilename)
 
-		err = getPiece(conn, metainfo, pieceNumber, outputFile)
+		data, err := getPiece(conn, metainfo, pieceNumber)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
+
+		outputFile, err := os.Create(outputFilename)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer outputFile.Close()
+		outputFile.Write(data)
 
 		fmt.Printf("Piece %d downloaded to %s\n", pieceNumber, outputFilename)
 	} else {
@@ -427,46 +428,46 @@ const (
 	Cancel        = 8
 )
 
-func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os.File) error {
+func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int) ([]byte, error) {
 	log.Println("Wait for a bitfield message from the peer indicating which pieces it has")
 	lengthPrefix := make([]byte, 4)
 	_, err := conn.Read(lengthPrefix)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	length := binary.BigEndian.Uint32(lengthPrefix)
 	payload := make([]byte, length)
 	bytesReceived, err := conn.Read(payload) // ignoring for now
 	if err != nil {
-		return err
+		return nil, err
 	}
 	msgId := payload[0]
 	if msgId != Bitfield {
-		return fmt.Errorf("expected Bitfield, got %d", msgId)
+		return nil, fmt.Errorf("expected Bitfield, got %d", msgId)
 	}
 	log.Println("Bytes received", bytesReceived)
 
 	log.Println("Send an interested message")
 	bytesSent, err := conn.Write([]byte{0, 0, 0, 1, Interested})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	log.Println("Bytes sent", bytesSent)
 
 	log.Println("Wait until you receive an unchoke message back")
 	_, err = conn.Read(lengthPrefix)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	length = binary.BigEndian.Uint32(lengthPrefix)
 	payload = make([]byte, length)
 	bytesReceived, err = conn.Read(payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	msgId = payload[0]
 	if msgId != Unchoke {
-		return fmt.Errorf("expected Unchoke, got %d", msgId)
+		return nil, fmt.Errorf("expected Unchoke, got %d", msgId)
 	}
 	log.Println("Bytes received", bytesReceived)
 
@@ -483,6 +484,8 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 
 	blockCount := int(math.Ceil(float64(remainingLength) / float64(blockLength)))
 
+	data := make([]byte, remainingLength)
+
 	for block := 0; block < blockCount; block++ {
 		//log.Printf("Sending request for piece %d, block %d, offset %d\n", pieceNumber, block, offset)
 		if remainingLength < blockLength {
@@ -495,14 +498,14 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 		binary.BigEndian.PutUint32(requestPayload, uint32(len(requestPayload)))
 		_, err = conn.Write(requestPayload)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		//log.Println("Bytes sent", bytesSent)
 
 		//log.Println("Waiting for piece message")
 		_, err = conn.Read(lengthPrefix)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		length = binary.BigEndian.Uint32(lengthPrefix)
 		if length == 0 {
@@ -513,11 +516,11 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 		payload = make([]byte, 9)
 		_, err = conn.Read(payload)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		msgId = payload[0]
 		if msgId != Piece {
-			return fmt.Errorf("expected Piece, got %d", msgId)
+			return nil, fmt.Errorf("expected Piece, got %d", msgId)
 		}
 		// index := binary.BigEndian.Uint32(payload[1:])
 		// begin := binary.BigEndian.Uint32(payload[5:])
@@ -525,18 +528,15 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 		length -= 9
 
 		// piece "data block"
-		payload = make([]byte, length)
-		_, err = io.ReadFull(conn, payload)
+		_, err = io.ReadFull(conn, data[offset:offset+blockLength])
 		if err != nil {
-			return err
+			return nil, err
 		}
 		//log.Println("Bytes received", bytesReceived)
-
-		outputFile.Write(payload)
 
 		offset += blockLength
 		remainingLength -= blockLength
 	}
 
-	return nil
+	return data, nil
 }
