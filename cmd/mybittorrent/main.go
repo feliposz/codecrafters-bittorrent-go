@@ -484,7 +484,7 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 	blockCount := int(math.Ceil(float64(remainingLength) / float64(blockLength)))
 
 	for block := 0; block < blockCount; block++ {
-		log.Printf("Sending request for piece %d, block %d, offset %d\n", pieceNumber, block, offset)
+		//log.Printf("Sending request for piece %d, block %d, offset %d\n", pieceNumber, block, offset)
 		if remainingLength < blockLength {
 			blockLength = remainingLength
 		}
@@ -493,13 +493,13 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(offset))
 		requestPayload = binary.BigEndian.AppendUint32(requestPayload, uint32(blockLength))
 		binary.BigEndian.PutUint32(requestPayload, uint32(len(requestPayload)))
-		bytesSent, err = conn.Write(requestPayload)
+		_, err = conn.Write(requestPayload)
 		if err != nil {
 			return err
 		}
-		log.Println("Bytes sent", bytesSent)
+		//log.Println("Bytes sent", bytesSent)
 
-		log.Println("Waiting for piece message")
+		//log.Println("Waiting for piece message")
 		_, err = conn.Read(lengthPrefix)
 		if err != nil {
 			return err
@@ -519,18 +519,18 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 		if msgId != Piece {
 			return fmt.Errorf("expected Piece, got %d", msgId)
 		}
-		index := binary.BigEndian.Uint32(payload[1:])
-		begin := binary.BigEndian.Uint32(payload[5:])
-		log.Println("index", index, "begin", begin)
+		// index := binary.BigEndian.Uint32(payload[1:])
+		// begin := binary.BigEndian.Uint32(payload[5:])
+		//log.Println("index", index, "begin", begin)
 		length -= 9
 
 		// piece "data block"
 		payload = make([]byte, length)
-		bytesReceived, err = io.ReadFull(conn, payload)
+		_, err = io.ReadFull(conn, payload)
 		if err != nil {
 			return err
 		}
-		log.Println("Bytes received", bytesReceived)
+		//log.Println("Bytes received", bytesReceived)
 
 		outputFile.Write(payload)
 
