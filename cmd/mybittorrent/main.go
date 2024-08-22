@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -297,26 +298,15 @@ func main() {
 			return
 		}
 
-		conn, err := net.Dial("tcp", fmtPeer(peers[0]))
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer conn.Close()
-		remotePeerID, err := handshake(conn, metainfo)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		fmt.Printf("Peer ID: %x\n", remotePeerID)
-
-		fmt.Println("requesting piece number:", pieceNumber)
-		fmt.Println("output filename:", outputFilename)
-
-		data, err := getPiece(conn, metainfo, pieceNumber, true)
-		if err != nil {
-			fmt.Println(err)
-			return
+		var data []byte
+		for retry := 1; retry <= 10; retry++ {
+			peerIndex := rand.Intn(len(peers))
+			data, err = downloadPiece(metainfo, pieceNumber, fmtPeer(peers[peerIndex]))
+			if err != nil {
+				fmt.Printf("Retrying (#%d) after error: %v", retry, err)
+				continue
+			}
+			break
 		}
 
 		outputFile, err := os.Create(outputFilename)
@@ -358,28 +348,6 @@ func main() {
 
 		var wg sync.WaitGroup
 
-		worker := func(pieceNumber int, peerIndex int) ([]byte, error) {
-			peer := fmtPeer(peers[peerIndex])
-			fmt.Printf("Getting piece %d from %s\n", pieceNumber, peer)
-			conn, err := net.Dial("tcp", peer)
-			if err != nil {
-				return nil, fmt.Errorf("error connecting to peer %v: %v", peer, err)
-			}
-			defer conn.Close()
-			_, err = handshake(conn, metainfo)
-			if err != nil {
-				return nil, err
-			}
-			fmt.Printf("handshake from %s\n", peer)
-
-			data, err := getPiece(conn, metainfo, pieceNumber, true)
-			if err != nil {
-				return nil, fmt.Errorf("error receiving piece %d from peer %v: %v", pieceNumber, peer, err)
-			}
-			fmt.Printf("got piece %d\n", pieceNumber)
-			return data, nil
-		}
-
 		peerAvailable := make(chan int, len(peers))
 		for i := 0; i < len(peers); i++ {
 			peerAvailable <- i
@@ -390,7 +358,7 @@ func main() {
 			go func(pieceNumber int) {
 				for retry := 1; retry <= 10; retry++ {
 					peerIndex := <-peerAvailable
-					data, err := worker(pieceNumber, peerIndex)
+					data, err := downloadPiece(metainfo, pieceNumber, fmtPeer(peers[peerIndex]))
 					peerAvailable <- peerIndex
 					if err != nil {
 						fmt.Printf("Retrying (#%d) after error: %v", retry, err)
@@ -636,5 +604,26 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, waitBitfield b
 		remainingLength -= blockLength
 	}
 
+	return data, nil
+}
+
+func downloadPiece(metainfo *Metainfo, pieceNumber int, peer string) ([]byte, error) {
+	fmt.Printf("Getting piece %d from %s\n", pieceNumber, peer)
+	conn, err := net.Dial("tcp", peer)
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to peer %v: %v", peer, err)
+	}
+	defer conn.Close()
+	_, err = handshake(conn, metainfo)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("handshake from %s\n", peer)
+
+	data, err := getPiece(conn, metainfo, pieceNumber, true)
+	if err != nil {
+		return nil, fmt.Errorf("error receiving piece %d from peer %v: %v", pieceNumber, peer, err)
+	}
+	fmt.Printf("got piece %d\n", pieceNumber)
 	return data, nil
 }
