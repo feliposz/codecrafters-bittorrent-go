@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -473,8 +474,17 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 	remainingLength := metainfo.PieceLength
 	blockLength := 16 * 1024
 
-	for {
-		log.Printf("Sending request for piece %d offset %d\n", pieceNumber, offset)
+	pieceCount := int(math.Ceil(float64(metainfo.Length) / float64(metainfo.PieceLength)))
+
+	// the last piece is usually shorter
+	if pieceNumber == pieceCount-1 {
+		remainingLength = metainfo.Length - (pieceCount-1)*metainfo.PieceLength
+	}
+
+	blockCount := int(math.Ceil(float64(remainingLength) / float64(blockLength)))
+
+	for block := 0; block < blockCount; block++ {
+		log.Printf("Sending request for piece %d, block %d, offset %d\n", pieceNumber, block, offset)
 		if remainingLength < blockLength {
 			blockLength = remainingLength
 		}
@@ -526,10 +536,6 @@ func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, outputFile *os
 
 		offset += blockLength
 		remainingLength -= blockLength
-
-		if remainingLength == 0 {
-			break
-		}
 	}
 
 	return nil
