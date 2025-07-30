@@ -14,6 +14,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"unicode"
 
@@ -389,6 +390,8 @@ func main() {
 		}
 
 		fmt.Printf("Piece %s downloaded to %s.\n", torrentFilename, outputFilename)
+	} else if command == "magnet_parse" {
+		magnetParse(os.Args[2])
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -631,4 +634,41 @@ func downloadPiece(metainfo *Metainfo, pieceNumber int, peer string) ([]byte, er
 	}
 	fmt.Printf("got piece %d\n", pieceNumber)
 	return data, nil
+}
+
+func magnetParse(s string) {
+	s, _ = strings.CutPrefix(s, "magnet:?")
+	m, err := url.ParseQuery(s)
+	if err != nil {
+		panic(err)
+	}
+	for k, v := range m {
+		// NOTE: assuming only tr can have multiple entries
+		switch k {
+		case "xt":
+			fmt.Printf("Info Hash: %s\n", v[0][9:])
+		case "dn":
+			fmt.Printf("Display Name: %s\n", v[0])
+		case "tr":
+			fmt.Printf("Tracker URL: %s\n", strings.Join(v, " "))
+		case "x.pe":
+			fmt.Printf("Peer Address: %s\n", v[0])
+		case "xl":
+			fmt.Printf("Exact Length: %s\n", v[0])
+		case "ws":
+			fmt.Printf("Web Seed: %s\n", v[0])
+		case "as":
+			fmt.Printf("Acceptable Source: %s\n", v[0])
+		case "xs":
+			fmt.Printf("Exact Source: %s\n", v[0])
+		case "kt":
+			fmt.Printf("Keyword Topic: %s\n", v[0])
+		case "mt":
+			fmt.Printf("Manifest Topic: %s\n", v[0])
+		case "so":
+			fmt.Printf("Select Only: %s\n", v[0])
+		default:
+			fmt.Printf("(unknown parameter '%s'): %s\n", k, strings.Join(v, ", "))
+		}
+	}
 }
