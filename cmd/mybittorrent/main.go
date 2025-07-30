@@ -20,7 +20,7 @@ import (
 	"github.com/jackpal/bencode-go"
 )
 
-var peerID = "00112233445566778899"
+var peerID []byte
 
 // TODO: change to byte array?
 func decodeBencode(bencodedString string) (interface{}, int, error) {
@@ -181,6 +181,11 @@ func GetInfoHash(info map[string]any) ([]byte, error) {
 
 func main() {
 	command := os.Args[1]
+
+	peerID = make([]byte, 20)
+	for i := range len(peerID) {
+		peerID[i] = byte(rand.Intn(10) + '0')
+	}
 
 	if command == "decode" {
 		bencodedValue := os.Args[2]
@@ -399,7 +404,7 @@ func fmtPeer(peer []byte) string {
 func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	values := url.Values{}
 	values.Add("info_hash", string(metainfo.InfoHash))
-	values.Add("peer_id", peerID)
+	values.Add("peer_id", string(peerID))
 	values.Add("port", "6881")
 	values.Add("uploaded", "0")
 	values.Add("downloaded", "0")
@@ -454,7 +459,7 @@ func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
 	copy(buf[28:48], metainfo.InfoHash)
 
 	// peer id (20 bytes) (you can use 00112233445566778899 for this challenge)
-	copy(buf[48:68], []byte(peerID))
+	copy(buf[48:68], peerID)
 
 	_, err := conn.Write(buf[:68])
 	if err != nil {
