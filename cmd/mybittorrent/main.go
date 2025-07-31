@@ -244,37 +244,7 @@ func main() {
 			return
 		}
 
-		peers, err := getPeers(metainfo)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		validPeer := false
-		for _, peer := range peers {
-			peerStr := fmtPeer(peer)
-			if peerStr == selectedPeer {
-				validPeer = true
-				break
-			}
-		}
-		if !validPeer {
-			fmt.Println("invalid peer:", selectedPeer)
-			return
-		}
-
-		conn, err := net.Dial("tcp", selectedPeer)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer conn.Close()
-		remotePeerID, err := handshake(conn, metainfo)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		fmt.Printf("Peer ID: %x\n", remotePeerID)
+		handshakeSetup(metainfo, selectedPeer)
 	} else if command == "download_piece" {
 		if os.Args[2] != "-o" {
 			fmt.Println("expected '-o' flag with output path")
@@ -445,6 +415,40 @@ func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	}
 
 	return nil, fmt.Errorf("unknown error getting peers")
+}
+
+func handshakeSetup(metainfo *Metainfo, selectedPeer string) {
+	peers, err := getPeers(metainfo)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	validPeer := false
+	for _, peer := range peers {
+		peerStr := fmtPeer(peer)
+		if peerStr == selectedPeer {
+			validPeer = true
+			break
+		}
+	}
+	if !validPeer {
+		fmt.Println("invalid peer:", selectedPeer)
+		return
+	}
+
+	conn, err := net.Dial("tcp", selectedPeer)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer conn.Close()
+	remotePeerID, err := handshake(conn, metainfo)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Printf("Peer ID: %x\n", remotePeerID)
 }
 
 func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
