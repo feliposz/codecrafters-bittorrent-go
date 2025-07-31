@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -362,6 +363,8 @@ func main() {
 		fmt.Printf("Piece %s downloaded to %s.\n", torrentFilename, outputFilename)
 	} else if command == "magnet_parse" {
 		magnetParse(os.Args[2])
+	} else if command == "magnet_handshake" {
+		magnetHandshake(os.Args[2])
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -424,17 +427,22 @@ func handshakeSetup(metainfo *Metainfo, selectedPeer string) {
 		return
 	}
 
-	validPeer := false
-	for _, peer := range peers {
-		peerStr := fmtPeer(peer)
-		if peerStr == selectedPeer {
-			validPeer = true
-			break
+	if len(selectedPeer) == 0 {
+		// TODO: should probably try all peers
+		selectedPeer = fmtPeer(peers[0])
+	} else {
+		validPeer := false
+		for _, peer := range peers {
+			peerStr := fmtPeer(peer)
+			if peerStr == selectedPeer {
+				validPeer = true
+				break
+			}
 		}
-	}
-	if !validPeer {
-		fmt.Println("invalid peer:", selectedPeer)
-		return
+		if !validPeer {
+			fmt.Println("invalid peer:", selectedPeer)
+			return
+		}
 	}
 
 	conn, err := net.Dial("tcp", selectedPeer)
@@ -461,6 +469,9 @@ func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
 
 	// eight reserved bytes, which are all set to zero (8 bytes)
 	// buf[20:28]
+
+	// set bit 20 to announce extension support
+	buf[25] = 0x10
 
 	// sha1 infohash (20 bytes) (NOT the hexadecimal representation, which is 40 bytes long)
 	copy(buf[28:48], metainfo.InfoHash)
@@ -675,4 +686,31 @@ func magnetParse(s string) {
 			fmt.Printf("(unknown parameter '%s'): %s\n", k, strings.Join(v, ", "))
 		}
 	}
+}
+
+func magnetMetainfo(magnetLink string) (metainfo *Metainfo) {
+	metainfo = &Metainfo{}
+	// The tracker will require a "left" parameter value greater than zero, but we don't know file size in advance.
+	// Reference: https://app.codecrafters.io/courses/bittorrent/stages/pk2
+	metainfo.Length = 999
+	s, _ := strings.CutPrefix(magnetLink, "magnet:?")
+	m, err := url.ParseQuery(s)
+	if err != nil {
+		panic(err)
+	}
+	for k, v := range m {
+		// NOTE: assuming only tr can have multiple entries
+		switch k {
+		case "xt":
+			metainfo.InfoHash, _ = hex.DecodeString(v[0][9:])
+		case "tr":
+			metainfo.Tracker = v[0]
+		}
+	}
+	return
+}
+
+func magnetHandshake(magnetLink string) {
+	metainfo := magnetMetainfo(magnetLink)
+	handshakeSetup(metainfo, "")
 }
