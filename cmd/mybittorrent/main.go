@@ -498,7 +498,7 @@ func extensionHandshake(conn net.Conn) (err error) {
 }
 
 func handshake(conn net.Conn, metainfo *Metainfo, extensionSupport bool) (peerID []byte, reservedBits []byte, err error) {
-	buf := make([]byte, 512)
+	buf := make([]byte, 68)
 	// length of the protocol string (BitTorrent protocol) which is 19 (1 byte)
 	buf[0] = 19
 
@@ -519,7 +519,7 @@ func handshake(conn net.Conn, metainfo *Metainfo, extensionSupport bool) (peerID
 	// peer id (20 bytes) (you can use 00112233445566778899 for this challenge)
 	copy(buf[48:68], peerID)
 
-	_, err = conn.Write(buf[:68])
+	_, err = conn.Write(buf)
 	if err != nil {
 		return
 	}
