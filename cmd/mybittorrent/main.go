@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -245,7 +246,7 @@ func main() {
 			return
 		}
 
-		handshakeSetup(metainfo, selectedPeer)
+		handshakeSetup(metainfo, selectedPeer, false)
 	} else if command == "download_piece" {
 		if os.Args[2] != "-o" {
 			fmt.Println("expected '-o' flag with output path")
@@ -420,7 +421,7 @@ func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	return nil, fmt.Errorf("unknown error getting peers")
 }
 
-func handshakeSetup(metainfo *Metainfo, selectedPeer string) {
+func handshakeSetup(metainfo *Metainfo, selectedPeer string, isMagnetLink bool) {
 	peers, err := getPeers(metainfo)
 	if err != nil {
 		fmt.Println(err)
@@ -451,15 +452,52 @@ func handshakeSetup(metainfo *Metainfo, selectedPeer string) {
 		return
 	}
 	defer conn.Close()
-	remotePeerID, err := handshake(conn, metainfo)
+	remotePeerID, reservedBits, err := handshake(conn, metainfo, isMagnetLink)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	fmt.Printf("Peer ID: %x\n", remotePeerID)
+
+	hasExtensionSupport := reservedBits[5]&0x10 != 0
+
+	fmt.Println("extension support: ", hasExtensionSupport)
+
+	if isMagnetLink && hasExtensionSupport {
+		if err := extensionHandshake(conn); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
 }
 
-func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
+func extensionHandshake(conn net.Conn) (err error) {
+
+	// Send extension handshake
+
+	type extensionPayload struct {
+		m struct {
+			ut_metadata byte
+		}
+	}
+	extensions := extensionPayload{}
+	extensions.m.ut_metadata = 1
+	buf := bytes.NewBuffer([]byte{})
+	bencode.Marshal(buf, extensions)
+
+	lengthPrefix := make([]byte, 4)
+	binary.BigEndian.PutUint32(lengthPrefix, uint32(2+buf.Len()))
+
+	conn.Write(lengthPrefix)
+	conn.Write([]byte{Extended, 0})
+	_, err = conn.Write(buf.Bytes())
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func handshake(conn net.Conn, metainfo *Metainfo, extensionSupport bool) (peerID []byte, reservedBits []byte, err error) {
 	buf := make([]byte, 512)
 	// length of the protocol string (BitTorrent protocol) which is 19 (1 byte)
 	buf[0] = 19
@@ -470,8 +508,10 @@ func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
 	// eight reserved bytes, which are all set to zero (8 bytes)
 	// buf[20:28]
 
-	// set bit 20 to announce extension support
-	buf[25] = 0x10
+	if extensionSupport {
+		// set bit 20 to announce extension support
+		buf[25] = 0x10
+	}
 
 	// sha1 infohash (20 bytes) (NOT the hexadecimal representation, which is 40 bytes long)
 	copy(buf[28:48], metainfo.InfoHash)
@@ -479,20 +519,20 @@ func handshake(conn net.Conn, metainfo *Metainfo) ([]byte, error) {
 	// peer id (20 bytes) (you can use 00112233445566778899 for this challenge)
 	copy(buf[48:68], peerID)
 
-	_, err := conn.Write(buf[:68])
+	_, err = conn.Write(buf[:68])
 	if err != nil {
-		return nil, err
+		return
 	}
 
 	size, err := conn.Read(buf)
 	if err != nil {
-		return nil, err
+		return
 	}
 	if size < 68 {
-		return nil, fmt.Errorf("unexpected handshake response (%d bytes): %q", size, buf[:size])
+		return nil, nil, fmt.Errorf("unexpected handshake response (%d bytes): %q", size, buf[:size])
 	}
 
-	return slices.Clone(buf[48:68]), nil
+	return slices.Clone(buf[48:68]), slices.Clone(buf[20:28]), nil
 }
 
 const (
@@ -505,6 +545,7 @@ const (
 	Request       = 6
 	Piece         = 7
 	Cancel        = 8
+	Extended      = 20
 )
 
 func getPiece(conn net.Conn, metainfo *Metainfo, pieceNumber int, waitBitfield bool) ([]byte, error) {
@@ -637,7 +678,7 @@ func downloadPiece(metainfo *Metainfo, pieceNumber int, peer string) ([]byte, er
 		return nil, fmt.Errorf("error connecting to peer %v: %v", peer, err)
 	}
 	defer conn.Close()
-	_, err = handshake(conn, metainfo)
+	_, _, err = handshake(conn, metainfo, false)
 	if err != nil {
 		return nil, err
 	}
@@ -712,5 +753,5 @@ func magnetMetainfo(magnetLink string) (metainfo *Metainfo) {
 
 func magnetHandshake(magnetLink string) {
 	metainfo := magnetMetainfo(magnetLink)
-	handshakeSetup(metainfo, "")
+	handshakeSetup(metainfo, "", true)
 }
