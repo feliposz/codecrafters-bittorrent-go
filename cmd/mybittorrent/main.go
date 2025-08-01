@@ -246,7 +246,8 @@ func main() {
 			return
 		}
 
-		handshakeSetup(metainfo, selectedPeer, false)
+		conn, _ := handshakeSetup(metainfo, selectedPeer, false)
+		defer conn.Close()
 	} else if command == "download_piece" {
 		if os.Args[2] != "-o" {
 			fmt.Println("expected '-o' flag with output path")
@@ -366,6 +367,8 @@ func main() {
 		magnetParse(os.Args[2])
 	} else if command == "magnet_handshake" {
 		magnetHandshake(os.Args[2])
+	} else if command == "magnet_info" {
+		magnetInfo(os.Args[2])
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
@@ -421,7 +424,7 @@ func getPeers(metainfo *Metainfo) ([][]byte, error) {
 	return nil, fmt.Errorf("unknown error getting peers")
 }
 
-func handshakeSetup(metainfo *Metainfo, selectedPeer string, isMagnetLink bool) {
+func handshakeSetup(metainfo *Metainfo, selectedPeer string, isMagnetLink bool) (conn net.Conn, metadataExtensionId byte) {
 	peers, err := getPeers(metainfo)
 	if err != nil {
 		fmt.Println(err)
@@ -446,12 +449,11 @@ func handshakeSetup(metainfo *Metainfo, selectedPeer string, isMagnetLink bool) 
 		}
 	}
 
-	conn, err := net.Dial("tcp", selectedPeer)
+	conn, err = net.Dial("tcp", selectedPeer)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	defer conn.Close()
 	remotePeerID, reservedBits, err := handshake(conn, metainfo, isMagnetLink)
 	if err != nil {
 		fmt.Println(err)
@@ -462,12 +464,14 @@ func handshakeSetup(metainfo *Metainfo, selectedPeer string, isMagnetLink bool) 
 	hasExtensionSupport := reservedBits[5]&0x10 != 0
 
 	if isMagnetLink && hasExtensionSupport {
-		metadataExtensionId, err := extensionHandshake(conn)
+		metadataExtensionId, err = extensionHandshake(conn)
 		if err != nil {
 			panic(err)
 		}
 		fmt.Printf("Peer Metadata Extension ID: %v\n", metadataExtensionId)
 	}
+
+	return
 }
 
 func extensionHandshake(conn net.Conn) (metadataExtensionId byte, err error) {
@@ -795,5 +799,33 @@ func magnetMetainfo(magnetLink string) (metainfo *Metainfo) {
 
 func magnetHandshake(magnetLink string) {
 	metainfo := magnetMetainfo(magnetLink)
-	handshakeSetup(metainfo, "", true)
+	conn, _ := handshakeSetup(metainfo, "", true)
+	defer conn.Close()
+}
+
+func magnetInfo(magnetLink string) {
+	metainfo := magnetMetainfo(magnetLink)
+	conn, metadataExtensionId := handshakeSetup(metainfo, "", true)
+	defer conn.Close()
+	requestMetadata(conn, metadataExtensionId)
+}
+
+func requestMetadata(conn net.Conn, metadataExtensionId byte) {
+	type metadataPayload struct {
+		Msg_type byte `bencode:"msg_type"`
+		Piece    byte `bencode:"piece"`
+	}
+	extensions := metadataPayload{0, 0}
+	buf := bytes.NewBuffer([]byte{})
+	bencode.Marshal(buf, extensions)
+
+	lengthPrefix := make([]byte, 4)
+	binary.BigEndian.PutUint32(lengthPrefix, uint32(2+buf.Len()))
+
+	conn.Write(lengthPrefix)
+	conn.Write([]byte{Extended, 0})
+	_, err := conn.Write(buf.Bytes())
+	if err != nil {
+		panic(err)
+	}
 }
