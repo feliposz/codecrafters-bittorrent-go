@@ -461,26 +461,26 @@ func handshakeSetup(metainfo *Metainfo, selectedPeer string, isMagnetLink bool) 
 
 	hasExtensionSupport := reservedBits[5]&0x10 != 0
 
-	fmt.Println("extension support: ", hasExtensionSupport)
-
 	if isMagnetLink && hasExtensionSupport {
-		if err := extensionHandshake(conn); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		metadataExtensionId, err := extensionHandshake(conn)
+		if err != nil {
+			panic(err)
 		}
+		fmt.Printf("Peer Metadata Extension ID: %v\n", metadataExtensionId)
 	}
 }
 
-func extensionHandshake(conn net.Conn) (err error) {
+func extensionHandshake(conn net.Conn) (metadataExtensionId byte, err error) {
 
 	// Send extension handshake
 
 	type extensionPayload struct {
-		m struct {
-			ut_metadata byte
-		}
+		M struct {
+			Ut_metadata byte `bencode:"ut_metadata"`
+		} `bencode:"m"`
 	}
 	extensions := extensionPayload{}
-	extensions.m.ut_metadata = 1
+	extensions.M.Ut_metadata = 123
 	buf := bytes.NewBuffer([]byte{})
 	bencode.Marshal(buf, extensions)
 
@@ -491,10 +491,52 @@ func extensionHandshake(conn net.Conn) (err error) {
 	conn.Write([]byte{Extended, 0})
 	_, err = conn.Write(buf.Bytes())
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	// Received bitfield (ignoring contents for now)
+
+	_, err = io.ReadFull(conn, lengthPrefix)
+	if err != nil {
+		return 0, err
+	}
+	length := binary.BigEndian.Uint32(lengthPrefix)
+	payload := make([]byte, length)
+	_, err = io.ReadFull(conn, payload)
+	if err != nil {
+		return 0, err
+	}
+	msgId := payload[0]
+	if msgId != Bitfield {
+		return 0, fmt.Errorf("expected Bitfield")
+	}
+
+	// Received extension handshake
+
+	_, err = io.ReadFull(conn, lengthPrefix)
+	if err != nil {
+		return 0, err
+	}
+	length = binary.BigEndian.Uint32(lengthPrefix)
+	payload = make([]byte, length)
+	_, err = io.ReadFull(conn, payload)
+	if err != nil {
+		return 0, err
+	}
+	msgId = payload[0]
+	if msgId != Extended {
+		return 0, fmt.Errorf("expected Extended")
+	}
+	extendedMsgId := payload[1]
+	if extendedMsgId != 0 {
+		return 0, fmt.Errorf("unknown extended message id")
+	}
+	err = bencode.Unmarshal(bytes.NewReader(payload[2:]), &extensions)
+	if err != nil {
+		return 0, err
+	}
+
+	return extensions.M.Ut_metadata, nil
 }
 
 func handshake(conn net.Conn, metainfo *Metainfo, extensionSupport bool) (peerID []byte, reservedBits []byte, err error) {
