@@ -23,6 +23,8 @@ import (
 	"github.com/jackpal/bencode-go"
 )
 
+const myMetadataExtensionId = 123
+
 var peerID []byte
 
 // TODO: change to byte array?
@@ -484,7 +486,7 @@ func extensionHandshake(conn net.Conn) (metadataExtensionId byte, err error) {
 		} `bencode:"m"`
 	}
 	extensions := extensionPayload{}
-	extensions.M.Ut_metadata = 123
+	extensions.M.Ut_metadata = myMetadataExtensionId
 	buf := bytes.NewBuffer([]byte{})
 	bencode.Marshal(buf, extensions)
 
@@ -807,17 +809,33 @@ func magnetInfo(magnetLink string) {
 	metainfo := magnetMetainfo(magnetLink)
 	conn, metadataExtensionId := handshakeSetup(metainfo, "", true)
 	defer conn.Close()
-	requestMetadata(conn, metadataExtensionId)
+	err := requestMetadata(conn, metadataExtensionId, metainfo)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Tracker URL: %s\n", metainfo.Tracker)
+	fmt.Printf("Length: %v\n", metainfo.Length)
+	fmt.Printf("Info Hash: %x\n", metainfo.InfoHash)
+	fmt.Printf("Piece Length: %v\n", metainfo.PieceLength)
+	fmt.Println("Piece Hashes:")
+	for _, hash := range metainfo.PieceHashes {
+		fmt.Printf("%x\n", hash)
+	}
 }
 
-func requestMetadata(conn net.Conn, metadataExtensionId byte) {
-	type metadataPayload struct {
+func requestMetadata(conn net.Conn, metadataExtensionId byte, metainfo *Metainfo) error {
+
+	// Requesting a piece of metadata from the peer
+	// NOTE: assuming only 1 piece for the challenge
+	// TODO: handle cases with multiple pieces
+
+	type metadataRequest struct {
 		Msg_type byte `bencode:"msg_type"`
 		Piece    byte `bencode:"piece"`
 	}
-	extensions := metadataPayload{0, 0}
+	metadataRequestMessage := metadataRequest{0, 0}
 	buf := bytes.NewBuffer([]byte{})
-	bencode.Marshal(buf, extensions)
+	bencode.Marshal(buf, metadataRequestMessage)
 
 	lengthPrefix := make([]byte, 4)
 	binary.BigEndian.PutUint32(lengthPrefix, uint32(2+buf.Len()))
@@ -826,6 +844,55 @@ func requestMetadata(conn net.Conn, metadataExtensionId byte) {
 	conn.Write([]byte{Extended, metadataExtensionId})
 	_, err := conn.Write(buf.Bytes())
 	if err != nil {
-		panic(err)
+		return err
 	}
+
+	// Receive metadata response
+
+	_, err = io.ReadFull(conn, lengthPrefix)
+	if err != nil {
+		return err
+	}
+	length := binary.BigEndian.Uint32(lengthPrefix)
+	payload := make([]byte, length)
+	_, err = io.ReadFull(conn, payload)
+	if err != nil {
+		return err
+	}
+	msgId := payload[0]
+	if msgId != Extended {
+		return fmt.Errorf("expected Extended")
+	}
+	extendedMsgId := payload[1]
+	if extendedMsgId != myMetadataExtensionId {
+		return fmt.Errorf("unknown extended message id")
+	}
+
+	decodedResponse, lastByte, err := decodeBencode(string(payload[2:]))
+	if err != nil {
+		return err
+	}
+	response := decodedResponse.(map[string]any)
+	if response == nil || response["msg_type"] != 1 || response["piece"] != 0 {
+		return fmt.Errorf("unexpected handshake response")
+	}
+
+	decodedInfo, _, err := decodeBencode(string(payload[lastByte+2:]))
+	if err != nil {
+		return err
+	}
+	info := decodedInfo.(map[string]any)
+	if info == nil {
+		return fmt.Errorf("unexpected info dictionary")
+	}
+
+	metainfo.Length, _ = info["length"].(int)
+	metainfo.PieceLength, _ = info["piece length"].(int)
+	metainfo.InfoHash, _ = GetInfoHash(info)
+	pieces := info["pieces"].(string)
+	for i := 0; i < len(pieces); i += 20 {
+		metainfo.PieceHashes = append(metainfo.PieceHashes, []byte(pieces[i:i+20]))
+	}
+
+	return nil
 }
