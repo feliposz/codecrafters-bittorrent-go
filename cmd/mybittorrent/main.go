@@ -823,7 +823,7 @@ func requestMetadata(conn net.Conn, metadataExtensionId byte) {
 	binary.BigEndian.PutUint32(lengthPrefix, uint32(2+buf.Len()))
 
 	conn.Write(lengthPrefix)
-	conn.Write([]byte{Extended, 0})
+	conn.Write([]byte{Extended, metadataExtensionId})
 	_, err := conn.Write(buf.Bytes())
 	if err != nil {
 		panic(err)
